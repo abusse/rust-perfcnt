@@ -12,13 +12,17 @@ license = "MIT"
 edition = '2018'
 
 [dependencies]
+cfg-if = "1.0.0"
 bitflags = "1.2.1"
 libc = "0.2"
-x86 = { version = "0.34.0", features = ["performance-counter"] }
+raw-syscall-base = { git = "https://github.com/abusse/raw-syscall-base", branch = "rfc2873-asm" }
 mmap = "0.1.*"
 byteorder = "1.3.4"
 nom = "4.2.3"
 phf = "0.8.0"
+
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
+x86 = { version = "0.34.0", features = ["performance-counter"] }
 
 [[bin]]
 name = "perfcnt-list"

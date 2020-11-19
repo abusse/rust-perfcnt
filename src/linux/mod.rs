@@ -1,4 +1,5 @@
 //! A wrapper around perf_event open (http://lxr.free-electrons.com/source/tools/perf/design.txt)
+use cfg_if::cfg_if;
 
 use std::fmt;
 use std::fs::File;
@@ -12,7 +13,6 @@ use std::str;
 
 use libc::{pid_t, strlen, MAP_SHARED};
 use mmap;
-use x86::*;
 
 #[allow(dead_code, non_camel_case_types)]
 mod hw_breakpoint;
@@ -26,10 +26,22 @@ pub mod perf_format;
 use self::perf_format::{EventAttrFlags, ReadFormatFlags, SampleFormatFlags};
 
 use crate::AbstractPerfCounter;
+use raw_syscall_base::syscall;
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use x86::perfcnt::intel::{EventDescription, Tuple};
 
-const IOCTL: usize = 16;
-const PERF_EVENT_OPEN: usize = 298;
+cfg_if! {
+    if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
+        const IOCTL: usize = 16;
+        const PERF_EVENT_OPEN: usize = 298;
+    } else if #[cfg(target_arch = "aarch64")] {
+        const IOCTL: usize = 29;
+        const PERF_EVENT_OPEN: usize = 241;
+    } else {
+        compile_error!("percnt is not implemented for this architecture.");
+    }
+}
 
 fn perf_event_open(
     hw_event: &perf_format::EventAttr,
@@ -39,19 +51,29 @@ fn perf_event_open(
     flags: ::libc::c_int,
 ) -> isize {
     unsafe {
-        syscall!(
+        match syscall(
             PERF_EVENT_OPEN,
-            hw_event as *const perf_format::EventAttr as usize,
-            pid,
-            cpu,
-            group_fd,
-            flags
-        ) as isize
+            &[
+                hw_event as *const perf_format::EventAttr as usize,
+                pid as usize,
+                cpu as usize,
+                group_fd as usize,
+                flags as usize,
+            ],
+        ) {
+            Ok(result) => result as isize,
+            Err(error) => panic!("Problem opening Perf event: {:?}", error),
+        }
     }
 }
 
 fn ioctl(fd: ::libc::c_int, request: u64, value: ::libc::c_int) -> isize {
-    unsafe { syscall!(IOCTL, fd, request, value) as isize }
+    unsafe {
+        match syscall(IOCTL, &[fd as usize, request as usize, value as usize]) {
+            Ok(result) => result as isize,
+            Err(error) => panic!("Problem to issue IOCTL: {:?}", error),
+        }
+    }
 }
 
 pub struct PerfCounterBuilderLinux {
@@ -228,6 +250,7 @@ impl PerfCounterBuilderLinux {
     //}
 
     /// Instantiate a H/W performance counter using a hardware event as described in Intels SDM.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub fn from_intel_event_description(counter: &EventDescription) -> PerfCounterBuilderLinux {
         let mut pc: PerfCounterBuilderLinux = Default::default();
         let mut config: u64 = 0;
@@ -874,7 +897,13 @@ impl MMAPRecord {
         let pgoff: u64 = read(ptr, 32);
         let filename = {
             let str_start = ptr.offset(40);
-            let strlen_ptr = mem::transmute::<*const u8, &i8>(str_start);
+            cfg_if! {
+                if #[cfg(target_arch = "aarch64")] {
+                    let strlen_ptr = mem::transmute::<*const u8, &u8>(str_start);
+                } else {
+                    let strlen_ptr = mem::transmute::<*const u8, &i8>(str_start);
+                }
+            }
             let length = strlen(strlen_ptr) as usize;
             let slice = slice::from_raw_parts(str_start, length);
             String::from(str::from_utf8(slice).unwrap())
@@ -933,7 +962,13 @@ impl CommRecord {
 
         let comm = {
             let str_start = ptr.offset(16);
-            let strlen_ptr = mem::transmute::<*const u8, &i8>(str_start);
+            cfg_if! {
+                if #[cfg(target_arch = "aarch64")] {
+                    let strlen_ptr = mem::transmute::<*const u8, &u8>(str_start);
+                } else {
+                    let strlen_ptr = mem::transmute::<*const u8, &i8>(str_start);
+                }
+            }
             let length = strlen(strlen_ptr) as usize;
             let slice = slice::from_raw_parts(str_start, length);
             String::from(str::from_utf8(slice).unwrap())
